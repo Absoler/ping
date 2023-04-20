@@ -13,7 +13,11 @@ import signal
 #         return True
 #     else:
 #         return False
-    
+
+TIMEOUT = 1
+timeout_mp:dict[int, int] = {}
+lock = threading.Lock() # protect timeout_mp
+
 def checksum(string) -> bytes:
     csum = 0      
     countTo = (len(string) // 2) * 2      
@@ -85,9 +89,15 @@ def send(sock:socket.socket, addr:str, ident:int):
         payload = struct.pack('!d', curTime)
         icmp = pack_icmp_forEchoRequest(ident, seq, payload)
         
-        len = sock.sendto(icmp, 0, (addr, 0))
+        sock.sendto(icmp, 0, (addr, 0))
         
-        time.sleep(1)
+        time.sleep(TIMEOUT)
+
+        lock.acquire()
+        if seq not in timeout_mp:
+            timeout_mp[seq] = 1
+        lock.release()
+
         seq += 1
 
 def recv(sock:socket.socket):
@@ -104,12 +114,25 @@ def recv(sock:socket.socket):
         
         curTime = time.time()
         
-        info = f"{addr} seq = {seq}, {curTime-sendTime:6.3}s"
+        timeDiff = curTime-sendTime
+        
+        lock.acquire()
+        timeout_mp[seq] = 0 if timeDiff <= TIMEOUT else 1
+        lock.release()
+
+        info = f"{addr} seq = {seq}, {timeDiff:6.3}s {'timeout' if timeDiff > TIMEOUT else ''}"
         print(info)
 
 def quit(signum, frame):
-    endinfo = f"end here"
+    endinfo = f"---------------statistics---------------\n"
+    lock.acquire()
+    loss, total = 0, len(timeout_mp)
+    for seq in timeout_mp:
+        if timeout_mp[seq] == 1:
+            loss += 1
+    endinfo += f"{total} packets transmitted, {total-loss} packets receive, {int(100*loss/total)}% packet loss"
     print(endinfo)
+    lock.release()
     os._exit(1)
 
 def main():
